@@ -6,80 +6,133 @@ import java.io.InputStreamReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 
 public class Main {
 
-    private static void fatal ( String comment ) {
-        System.out.println(comment);
-        System.exit(-1);
+    private static final int PACKET_SIZE = 4096;
+
+    public static void main(String[] args) {
+        if (args.length != 1) {
+            return;
+        }
+
+        int localPort;
+
+        try {
+            localPort = Integer.parseInt(args[0]);
+        } catch (NumberFormatException e) {
+            System.out.println("Der lokale Port muss eine Zahl sein.");
+            return;
+        }
+
+        try {
+            startChat(localPort);
+        } catch (IOException e) {
+            System.out.println("Fehler beim Starten des Chats: " + e.getMessage());
+        }
     }
 
-    // ************************************************************************
-    // MAIN
-    // ************************************************************************
-    public static void main(String[] args) throws IOException {
-        if (args.length != 2)
-            fatal("Usage: \"<netcat> -l <port>\" or \"netcat <ip> <port>\"");
-        int port = Integer.parseInt(args[1]);
-        if (args[0].equalsIgnoreCase("-l"))
-            listenAndTalk(port);
-        else
-            connectAndTalk(args[0],port);
+    private static void startChat(int localPort) throws IOException {
+        DatagramSocket socket = new DatagramSocket(localPort);
+
+        System.out.println("UDP-Chat gestartet auf Port " + localPort);
+        System.out.println();
+        Thread receiverThread = new Thread(() -> receiveMessages(socket));
+        receiverThread.setDaemon(true);
+        receiverThread.start();
+        readAndSendMessages(socket);
+
+        socket.close();
+        System.out.println("UDP-Chat beendet.");
     }
 
-    private static final int packetSize = 4096;
+    private static void receiveMessages(DatagramSocket socket) {
+        byte[] buffer = new byte[PACKET_SIZE];
 
-    // ************************************************************************
-    // listenAndTalk
-    // ************************************************************************
-    private static void listenAndTalk ( int port ) throws IOException  {
-        DatagramSocket s = new DatagramSocket(port);
-        byte[] buffer = new byte[packetSize];
-        String line;
-        do {
-            DatagramPacket p = new DatagramPacket(buffer,buffer.length);
-            s.receive(p);
-            line = new String(buffer,0,p.getLength(),"UTF-8");
-            System.out.println(line);
-        } while (!line.equalsIgnoreCase("stop"));
-        s.close();
-    }
-
-    // ************************************************************************
-    // connectAndTalk
-    // ************************************************************************
-    private static void connectAndTalk ( String other_host, int other_port ) throws IOException {
-        InetAddress other_address = InetAddress.getByName(other_host);
-        DatagramSocket s = new DatagramSocket();
-        byte[] buffer = new byte[packetSize];
-        String line;
-        do {
-            line = readString();
-            buffer = line.getBytes("UTF-8");
-            DatagramPacket p = new DatagramPacket(buffer,buffer.length,other_address,other_port);
-            s.send(p);
-        } while (!line.equalsIgnoreCase("stop"));
-        s.close();
-    }
-
-    private static String readString () {
-        BufferedReader br = null;
-        boolean again = false;
-        String input = null;
-        do {
-            // System.out.print("Input: ");
+        while (!socket.isClosed()) {
             try {
-                if (br == null)
-                    br = new BufferedReader(new InputStreamReader(System.in));
-                input = br.readLine();
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                socket.receive(packet);
+
+                String message = new String(
+                        packet.getData(),
+                        0,
+                        packet.getLength(),
+                        StandardCharsets.UTF_8
+                );
+
+                String senderIp = packet.getAddress().getHostAddress();
+                int senderPort = packet.getPort();
+
+                System.out.println();
+                System.out.println("Nachricht von " + senderIp + ":" + senderPort);
+                System.out.println(message);
+                System.out.print("> ");
+            } catch (IOException e) {
+                if (!socket.isClosed()) {
+                    System.out.println("Fehler beim Empfangen: " + e.getMessage());
+                }
             }
-            catch (Exception e) {
-                System.out.printf("Exception: %s\n",e.getMessage());
-                again = true;
-            }
-        } while (again);
-        return input;
+        }
     }
 
-    private BufferedReader br = null;
+    private static void readAndSendMessages(DatagramSocket socket) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+
+        String line;
+
+        System.out.print("> ");
+
+        while ((line = reader.readLine()) != null) {
+            if (line.equalsIgnoreCase("stop")) {
+                break;
+            }
+
+            if (line.startsWith("send ")) {
+                sendMessage(socket, line);
+            } else {
+                System.out.println("Ungültiger Befehl.");
+                System.out.println("Verwendung: send <Ziel-IP-Adresse> <Ziel-Port> <Nachricht>");
+            }
+
+            System.out.print("> ");
+        }
+    }
+
+    private static void sendMessage(DatagramSocket socket, String line) {
+        String[] parts = line.split(" ", 4);
+
+        if (parts.length < 4) {
+            System.out.println("Ungültiger Befehl.");
+            System.out.println("Verwendung: send <Ziel-IP-Adresse> <Ziel-Port> <Nachricht>");
+            return;
+        }
+
+        String targetIp = parts[1];
+        String targetPortText = parts[2];
+        String message = parts[3];
+
+        try {
+            int targetPort = Integer.parseInt(targetPortText);
+            InetAddress targetAddress = InetAddress.getByName(targetIp);
+
+            byte[] data = message.getBytes(StandardCharsets.UTF_8);
+
+            DatagramPacket packet = new DatagramPacket(
+                    data,
+                    data.length,
+                    targetAddress,
+                    targetPort
+            );
+
+            socket.send(packet);
+
+            System.out.println("Gesendet an " + targetIp + ":" + targetPort);
+        } catch (NumberFormatException e) {
+            System.out.println("Der Ziel-Port muss eine Zahl sein.");
+        } catch (IOException e) {
+            System.out.println("Fehler beim Senden: " + e.getMessage());
+        }
+    }
 }
